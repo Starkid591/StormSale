@@ -1,0 +1,27 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and",
+    "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and-r2",
+    "fix/issue-96-test-validation-schema-fuzzing",
+    "fix/issue-96-test-validation-schema-fuzzing-r2",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and": "main",
+    "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and-r2": "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and",
+    "fix/issue-96-test-validation-schema-fuzzing": "main",
+    "fix/issue-96-test-validation-schema-fuzzing-r2": "fix/issue-96-test-validation-schema-fuzzing",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and",
+    "fix/issue-96-test-validation-schema-fuzzing",
+    "origin",
+    "feat/issue-137-feat-web3-implement-sep-0024-hosted-deposit-and-r2",
+    "fix/issue-96-test-validation-schema-fuzzing-r2"
+  ]
+}
