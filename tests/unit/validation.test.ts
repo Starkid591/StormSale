@@ -396,7 +396,7 @@ true);
         const input = randomAny(prng);
         if (typeof input === 'string') continue;
         const err = expectRejected(emailSchema, input);
-        expect(issueCodes(err)).equal([0]).length > 0 ? expect(issueCodes(err)).toContain('invalid_type') : undefined;
+        expect(issueCodes(err)).toContain('invalid_type');
       }
     });
 
@@ -559,8 +559,8 @@ true);
       };
       const first = expectRejected(createUserSchema, input);
       const second = expectRejected(createUserSchema, input);
-      expect(issueCodes(first).sort()).equal(issueCodes(second).sort());
-      expect(issuePaths(first).sort()).equal(issuePaths(second).sort());
+      expect(issueCodes(first).sort()).toEqual(issueCodes(second).sort());
+      expect(issuePaths(first).sort()).toEqual(issuePaths(second).sort());
     });
   });
 
