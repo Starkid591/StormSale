@@ -1,4 +1,4 @@
-import { StellarFullToml } from "@stellar-js/stellar-sdk";
+import { StellarToml } from "@stellar-js/stellar-sdk";
 
 export interface AnchorToml {
   transferServerSep24?: string;
@@ -106,7 +106,7 @@ export async function fetchAnchorToml(homeDomain: string): Promise<AnchorToml> {
     );
   }
   const json = (await response.json()) as Record<string, unknown>;
-  const toml = StellarFullToml.fromJSON(json);
+  const toml = StellarToml.fromJSON(json);
   const transferServerSep24 = toml.documents.TRANSFER_SERVER_SEP24;
   if (!transferServerSep24) {
     throw new Sep24Error(
@@ -120,7 +120,7 @@ export async function fetchAnchorToml(homeDomain: string): Promise<AnchorToml> {
     .map((a) => ({ code: String(a.code), issuer: String(a.issuer) }));
   return {
     transferServerSep24,
-    networkPassphrase: toml.data.NETWORK_PASSPHRASE as string | undefined,
+    networkPassphrase: toml.data.NETWORK_PASTHRASE as string | undefined,
     displayName: toml.data.DOCUMENTATION as string | undefined,
     assets,
   };

@@ -52,29 +52,6 @@ export const ISSUERS = {
   },
 } as const;
 
-export const NETWORK_ESCROW_ASSETS = {
-  TESTNET: {
-    USDC: {
-      contractAddress: new Asset("USDC", ISSUERS.TESTNET.USDC).contractId(Networks.TESTNET),
-      issuer: ISSUERS.TESTNET.USDC,
-    },
-    EURC: {
-      contractAddress: new Asset("EURC", ISSUERS.TESTNET.EURC).contractId(Networks.TESTNET),
-      issuer: ISSUERS.TESTNET.EURC,
-    },
-  },
-  PUBLIC: {
-    USDC: {
-      contractAddress: new Asset("USDC", ISSUERS.PUBLIC.USDC).contractId(Networks.PUBLIC),
-      issuer: ISSUERS.PUBLIC.USDC,
-    },
-    EURC: {
-      contractAddress: new Asset("EURC", ISSUERS.PUBLIC.EURC).contractId(Networks.PUBLIC),
-      issuer: ISSUERS.PUBLIC.EURC,
-    },
-  },
-} as const;
-
 export function getSupportedEscrowAssets(
   network: "TESTNET" | "PUBLIC" = STELLAR_CONFIG.network,
 ): Record<"XLM" | "USDC" | "EURC", EscrowAsset> {
@@ -115,8 +92,8 @@ export const STELLAR_NETWORKS = {
     EURC: "GB3Q6QDZYTHWT7E5PVS3W7FUT5GVAFC5KSZFFLPU25GO7VTC3NM2ZTVO",
   },
   PUBLIC: {
-    USDC: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPPPRE34K4KZVN",
-    EURC: "GDHU6WRG4IEQXM5NZ4BMPGOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2",
+    USDC: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    EURC: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2",
   },
 } as const;
 
