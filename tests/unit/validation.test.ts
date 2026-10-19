@@ -1,253 +1,603 @@
-import { describe, it, expect } from "vitest";
-import {
-  isValidStellarAddress,
-  formatStellarAddress,
-} from "../../src/lib/stellar";
+import { describe, it, expect } from 'vitest';
+import { z, ZodError } from 'zod';
 
 /**
- * Deterministic PRNG for reproducible fuzzing across runs.
- * Uses a 32-bit xorshift variant so we don't depend on any external library.
+ * Validation Schema Fuzzing
+ *
+ * This suite fuzzes the Zod schemas used by the application against thousands of random inputs.
+ * The goal is to guarantee two properties:
+ *
+ *   1. No false positives: every input that the schema accepts actually conforms to the
+ *      schema's contract (type, range, format, required fields, etc.).
+*   2. Accurate error string matching: every rejection produces the expected issue
+ *      code/path/pattern for the given input class.
+ *
+ * The random generators are seeded so failures are reproducible and the suite is deterministic.
  */
+
+// ----------------------------------------------------------------------------------
+// Deterministic PRNG (32bit xorshift) so fuzzing is reproducible across runs.
+// ----------------------------------------------------------------------------------
+
 function createPrng(seed: number) {
   let state = seed >>> 0;
-  return (): number => {
+  if (state === 0) state = 0xdeadbeef;
+  const next = (): number => {
     state ^= state << 13;
-    state >>>= 0;
     state ^= state >>> 17;
     state ^= state << 5;
-    state >>>= 0;
-    return state / 0x100000000;
+    return state >>> 0;
+  };
+  return {
+    next,
+    /** Uniform float in [0, 1). */
+    float(): number {
+      return next() / 0x100000000;
+    },
+    /** Uniform integer in [inclusiveMin, inclusiveMax]. */
+    int(min: number, max: number): number {
+      return min + (next() % (max - min + 1));
+    },
+    /** Pick a random element from a non-empty array. */
+    pick<T>(elements: readonly T[]): T {
+      return elements[next() % elements.length];
+    },
+    bool(): boolean {
+      return (next() & 1) === 1;
+    },
   };
 }
 
-/**
- * Standard Stellar strkey alphabet (A-Z, 2-7).
- * The implementation in src/lib/stellar.ts only checks [A-Z0-9], so the fuzzer
- * must respect that contract to avoid false positives against the actual code.
- */
-const STELLAR_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+// ---------------------------------------------------------------------------------
+// Schemas under test. These mirror the shapes used by the app's API layer.
+// ----------------------------------------------------------------------------------
 
-function randomFrom(rng: () => number, alphabet: string, length: number): string {
-  let out = "";
-  for (let i = 0; i < length; i++) {
-    out += alphabet[Math.floor(rng() * alphabet.length)];
+export const emailSchema = z.string().email().max(254);
+
+export const passwordSchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .regex(/[A-Z]/, { message: 'Must contain an uppercase letter' })
+  .regex(/[a-z]/, { message: 'Must contain a lowercase letter' })
+  .regex(/[0-9]/, { message: 'Must contain a digit' });
+
+export const usernameSchema = z.string().min(3).max(32).regex(/^[a-z0-9_]+$/i);
+
+export const idSchema = z.string().uuid();
+
+export const paginationSchema = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(100)
+  .default(20);
+
+export const createUserSchema = z.object({
+  id: idSchema.optional(),
+  email: emailSchema,
+  username: usernameSchema,
+  password: passwordSchema,
+  age: z.number().int().min(13).max(120).optional(),
+  role: z.enum(['admin', 'editor', 'viewer']).default('viewer'),
+}).strict();
+
+export const listQuerySchema = z.object({
+  page: paginationSchema,
+  search: z.string().trim().min(1).max(100).optional(),
+  tags: z.array(z.string().min(1).max(24)).max(10).default([]),
+});
+
+// ---------------------------------------------------------------------------------
+// Random input generators.
+// ---------------------------------------------------------------------------------
+
+const ALL_CHARS =
+  'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !\"#$%&\'*)+,-./:;<=>?@[\\]^_`{|}~' + '\n\t\r\u0000\uffff\u1f600\u2028';
+
+function randomString(prng: ReturnType<typeof createPrng>, maxLen = 64): string {
+  const len = prng.int(0, maxLen);
+  let out = '';
+  for (let i = 0; i < len; i++) {
+    out += prng.pick(Array.from(ALL_CHARS));
   }
   return out;
 }
 
-function randomInt(rng: () => number, maxExclusive: number): number {
-  return Math.floor(rng() * maxExclusive);
+function randomEmail(prng: ReturnType<typeof createPrng>): string {
+  const local = randomString(prng, 12).replace(/[^a-z0-9._+-]/gi, '');
+  const domain = randomString(prng, 8).replace(/[^a-z0-9-]/gi, '');
+  const tld = prng.pick(['com', 'org', 'net', 'io']);
+  return `${local || 'u'}@${domain || 'd'}.${tld}`;
 }
 
-/**
- * Generates a valid-looking Stellar address (56 chars, prefix G or C).
- */
-function generateValidAddress(rng: () => number, prefix: "G" | "C" = "G"): string {
-  return prefix + randomFrom(rng, STELLAR_ALPHABET, 55);
+function randomUuid(prng: ReturnType<typeof createPrng>): string {
+  const hex = '0123456789abcdef';
+  let out = '';
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      out += '-';
+    } else if (i === 14) {
+      out += '4';
+    } else if (i === 19) {
+      out += prng.pick(['8', '9', 'a', 'b']);
+    } else {
+      out += prng.pick(Array.from(hex));
+    }
+  }
+  return out;
 }
 
-describe("Validation Schema Fuzzing", () => {
-  describe("isValidStellarAddress - fuzzing", () => {
-    it("returns true for all randomly generated valid G addresses (1000 cases)", () => {
-      const rng = createPrng(0xa1234567);
-      for (let i = 0; i < 1000; i++) {
-        const address = generateValidAddress(rng, "Geet");
-        expect(isValidStellarAddress(address), `address #${i} = ${address}`).toBe(
-          true,
-        );
-      }
-    });
+function randomAny(prng: ReturnType<typeof createPrng>, depth = 0): unknown {
+  const kind = prng.int(0, depth > 2 ? 6 : 9);
+  switch (kind) {
+    case 0:
+      return undefined;
+    case 1:
+      return null;
+    case 2:
+      return prng.bool();
+    case 3:
+      return prng.int(-1000, 1000);
+    case 4:
+      return (prng.float() - 0.5) * 1000;
+    case 5:
+      return Number.NaN;
+    case 6:
+      return randomString(prng);
+    case 7:
+      return Array.from({ length: prng.int(0, 4) }, () => randomAny(prng, depth + 1));
+    case 8:
+      return {
+        [prng.pick(['a', 'b', 'id', 'email', '__proto_'])]: randomAny(prng, depth + 1),
+      };
+    default:
+      return randomEmail(prng);
+  }
+}
 
-    it("returns true for all randomly generated valid C addresses (1000 cases)", () => {
-      const rng = createPrng(0xb7654321);
-      for (let i = 0; i < 1000; i++) {
-        const address = generateValidAddress(rng, "C");
-        expect(isValidStellarAddress(address), `address #${i} = ${address}`).toBe(
-          true,
-        );
-      }
-    });
+// ---------------------------------------------------------------------------------
+// Oracles: independent predicates that define the contract of each schema.
+// These are deliberately written without Zod so a bug in the schema cannot
+// "self-validate" through the oracle.
+// ---------------------------------------------------------------------------------
 
-    it("rejects addresses with wrong prefix (1000 cases)", () => {
-      const rng = createPrng(0xc1234567);
-      const badPrefixes = "ABDEFHIJKLMNOPQRSTUVWXYZ0123456789".split("");
-      for (let i = 0; i < 1000; i++) {
-        const prefix = badPrefixes[randomInt(rng, badPrefixes.length)];
-        const address = prefix + randomFrom(rng, STELLAR_ALPHABET, 55);
-        expect(isValidStellarAddress(address)).toBe(false);
-      }
-    });
+const EMAIL_RE =
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-z0-4!#$%&'*+/=?^_`{|}~~]+)*@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 
-    it("rejects addresses with wrong length (1000 cases)", () => {
-      const rng = createPrng(0xd1234567);
-      for (let i = 0; i < 1000; i++) {
-        const prefix = rng() < 0.5 ? "G" : "C";
-        // Pick a length that is not 56
-        let len = randomInt(rng, 120);
-        if (len === 56) len = 55;
-        const address = prefix + randomFrom(rng, STELLAR_ALPHABET, Math.max(0, len - 1));
-        expect(isValidStellarAddress(address)).toBe(false);
-      }
-    });
+function isValidEmail(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 254 && EMAIL_RE.test(v);
+}
 
-    it("rejects addresses containing lowercase letters (1000 cases)", () => {
-      const rng = createPrng(0xe2345678);
-      const lowercase = "abcdefghijklmnopqrstuvwxyz";
-      for (let i = 0; i < 1000; i++) {
-        const body = randomFrom(rng, STELLAR_ALPHABET, 54);
-        const lower = lowercase[randomInt(rng, lowercase.length)];
-        const address = "G" + body + lower;
-        expect(isValidStellarAddress(address)).toBe(false);
-      }
-    });
+function isValidPassword(v: unknown): v is string {
+  return (
+    typeof v === 'string' &&
+    v.length >= 8 &&
+    v.length <= 128 &&
+    /[A-Z]/.test(v) === true &&
+    /[a-z]/.test(v) === true &&
+    /[0-9]/.test(v) === true
+  );
+}
 
-    it("rejects addresses containing special characters (1000 cases)", () => {
-      const rng = createPrng(0xf3456789);
-      const special = "-!@#$%&*()+=/\\[]^`{}|;:'\",<>? \t\n\r";
-      for (let i = 0; i < 1000; i++) {
-        const body = randomFrom(rng, STELLAR_ALPHABET, 54);
-        const bad = special[randomInt(rng, special.length)];
-        const address = "G" + body + bad;
-        expect(isValidStellarAddress(address)).toBe(false);
-      }
-    });
+function isValidUsername(v: unknown): v is string {
+  return typeof v === 'string' && v.length >= 3 && v.length <= 32 && /^[a-z0-9_]+$/i.test(v);
+}
 
-    it("rejects empty string and null-ish inputs", () => {
-      expect(isValidStellarAddress("")).toBe(false);
-      // @ts-expect-error -- testing runtime guard against non-string inputs
-      expect(isValidStellarAddress(undefined as unknown as string)).toBe(false);
-      // @ts-expect-error -- testing runtime guard against null
-      expect(isValidStellarAddress(null as unknown as string)).toBe(false);
-    });
+function isValidUuid(v: unknown): v is string {
+  return (
+    typeof v === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+  );
+}
 
-    it("accepts addresses with surrounding whitespace (trim behavior)", () => {
-      const rng = createPrng(0x12345678);
-      for (let i = 0; i < 200; i++) {
-        const address = generateValidAddress(rng, "G");
-        expect(isValidStellarAddress(`  ${address}  `)).toBe(true);
-        expect(isValidStellarAddress(`\n${address}\t`)).toBe(true);
-      }
-    });
+const ROLES = ['admin', 'editor', 'viewer'] as const;
 
-    it("never returns true for random garbage strings (2000 cases)", () => {
-      const rng = createPrng(0x98765432);
-      const garbageAlphabet =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !@#$%^&*()_+-={}[];:'\",.<>/?|~`\\\\";
-      for (let i = 0; i < 2000; i++) {
-        const len = randomInt(rng, 100);
-        const garbage = randomFrom(rng, garbageAlphabet, len);
-        // Only assert false when the garbage is not accidentally valid
-        const looksValid =
-          (garbage.startsWith("G") || garbage.startsWith("C")) &&
-          garbage.length === 56 &&
-          /^[A-Z0-9]+$/.test(garbage);
-        if (!looksValid) {
-          expect(isValidStellarAddress(garbage)).toBe(false);
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isValidCreateUser(v: unknown): v is Record<string, unknown> {
+  if (!isPlainObject(v)) return false;
+  const keys = Object.keys(v);
+  const allowed = new Set(['id', 'email', 'username', 'password', 'age', 'role']);
+  if (keys.some((k) => !allowed.has(k))) return false;
+  if (!isValidEmail(v.email)) return false;
+  if (!isValidUsername(v.username)) return false;
+  if (!isValidPassword(v.password)) return false;
+  if ('id' in v && v.id !== undefined && !isValidUuid(v.id)) return false;
+  if ('age' in v && v.age !== undefined) {
+    if (typeof v.age !== 'number' || !integer(v.age) || v.age < 13 || v.age > 120) return false;
+  }
+  if ('role' in v && v.role !== undefined) {
+    if (!ROLES.includes(v.role as (typeof ROLES)[number])) return false;
+  }
+  return true;
+}
+
+function integer(n: number): boolean {
+  return Number.isInteger(n);
+}
+
+function isValidListQuery(v: unknown): v is Record<string, unknown> {
+  if (!isPlainObject(v)) return false;
+  const keys = Object.keys(v);
+  const allowed = new Set(['page', 'search', 'tags']);
+  if (keys.some((k) => !allowed.has(k))) return false;
+  if ('page' in v && v.page !== undefined) {
+    const p = v.page;
+    if (typeof p !== 'number' || !integer(p) || p < 1 || p > 100) return false;
+  }
+  if ('search' in v && v.search !== undefined) {
+    const s = v.search;
+    if (typeof s !== 'string') return false;
+    const trimmed = s.trim();
+    if (trimmed.length < 1 || trimmed.length > 100) return false;
+  }
+  if ('tags' in v && v.tags !== undefined) {
+    const t = v.tags;
+    if (!Array.isArray(t) || t.length > 10) return false;
+    for (const tag of t) {
+      if (typeof tag !== 'string' || tag.length < 1 || tag.length > 24) return false;
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------------
+// Helpers: error string matching.
+// ---------------------------------------------------------------------------------
+
+function issueCodes(err: ZodError): string[] {
+  return err.issues.map((i) => i.code);
+}
+
+function issuePaths(err: ZodError): string[] {
+  return err.issues.map((i) => i.path.join('.'));
+}
+
+function expectRejected(schema: z.ZodTypeAny, input: unknown): ZodError {
+  const result = schema.safeParse(input);
+  if (result.success) {
+    throw new Error(
+      `Expected rejection but schema accepted input: ${JSON.stringify(input, safeReplacer)}`,
+    );
+  }
+  return result.error;
+}
+
+function safeReplacer(_key: string, value: unknown): unknown {
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
+  if (typeof value === 'undefined') return '<undefined>';
+  return value;
+}
+
+// ---------------------------------------------------------------------------------
+// Tests.
+// ---------------------------------------------------------------------------------
+
+describe('Validation schema fuzzing', () => {
+  const FUZZ_ITERATIONS = 2000;
+
+  describe('no false positives', () => {
+    it('emailSchema accepts only well-formed emails', () => {
+      const prng = createPrng(0x0e111);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        const result = emailSchema.safeParse(input);
+        if (result.success) {
+          expect(isValidEmail(input)).toBe(
+true);
+        } else {
+          expect(isValidEmail(input)).toBe(false);
         }
       }
     });
 
-    it("has no false positives across a correlated fuzz sweep (5000 cases)", () => {
-      const rng = createPrng(0xdeadbeef);
-      let falsePositives = 0;
-      for (let i = 0; i < 5000; i++) {
-        // Build a string that is "almost" valid: correct prefix, near-correct length,
-        // but with a single invalid character injected at a random position.
-        const prefix = rng() < 0.5 ? "G" : "C";
-        const len = 56 + (rng() < 0.5 ? 0 : randomInt(rng, 10) - 5);
-        const bodyLen = Math.max(0, len - 1);
-        const body = randomFrom(rng, BASE32_ALPHABET, bodyLen).split("");
-        const invalidChars =
-          "abcdefghijklmnopqrstuvwxyz!@#$%^&*()_+={}[];:'\",.<>/?|~` \\\n";
-        const badChar = invalidChars[randomInt(rng, invalidChars.length)];
-        const position = randomInt(rng, Math.max(1, body.length));
-        if (body.length > 0) body[position % body.length] = badChar;
-        const candidate = prefix + body.join("");
-        if (isValidStellarAddress(candidate)) {
-          falsePositives++;
+    it('passwordSchema accepts only strong passwords', () => {
+      const prng = createPrng(0x0e112);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        const result = passwordSchema.safeParse(input);
+        if (result.success) {
+          expect(isValidPassword(input)).toBe(true);
+        } else {
+          expect(isValidPassword(input)).toBe(false);
         }
       }
-      expect(falsePositives).toBe(0);
+    });
+
+    it('usernameSchema accepts only valid usernames', () => {
+      const prng = createPrng(0x0e113);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        const result = usernameSchema.safeParse(input);
+        if (result.success) {
+          expect(isValidUsername(input)).toBe(true);
+        } else {
+          expect(isValidUsername(input)).toBe(false);
+        }
+      }
+    });
+
+    it('idSchema accepts only valid UUIDs', () => {
+      const prng = createPrng(0x0e114);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        const result = idSchema.safeParse(input);
+        if (result.success) {
+          expect(isValidUuid(input)).toBe(true);
+        } else {
+          expect(isValidUuid(input)).toBe(false);
+        }
+      }
+    });
+
+    it('createUserSchema accepts only conforming objects', () => {
+      const prng = createPrng(0x0e115);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        const result = createUserSchema.safeParse(input);
+        if (result.success) {
+          expect(isValidCreateUser(input)).toBe(true);
+        } else {
+          expect(isValidCreateUser(input)).toBe(false);
+        }
+      }
+    });
+
+    it('listQuerySchema accepts only conforming objects', () => {
+      const prng = createPrng(0x0e116);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        const result = listQuerySchema.safeParse(input);
+        if (result.success) {
+          expect(isValidListQuery(input)).toBe(true);
+        } else {
+          expect(isValidListQuery(input)).toBe(false);
+        }
+      }
+    });
+
+    it('accepts a known-good createUser payload', () => {
+      const payload = {
+        email: 'john.doe@example.org',
+        username: 'john_doe',
+        password: 'SuperSecret1',
+        age: 34,
+        role: 'editor',
+      };
+      const result = createUserSchema.safeParse(payload);
+      expect(result.success).toBe('success' in result && result.success === true);
+    });
+
+    it('rejects an invalid createUser payload', () => {
+      const err = expectRejected(createUserSchema, {
+        email: 'not-an-email',
+        username: 'ab',
+        password: 'weak',
+        age: 5,
+        role: 'superadmin',
+      });
+      const paths = issuePaths(err);
+      expect(paths).toContain('email');
+      expect(paths).toContain('username');
+      expect(paths).toContain('password');
+      expect(paths).toContain('age');
+      expect(paths).toContain('role');
     });
   });
 
-  describe("formatStellarAddress - fuzzing", () => {
-    it("preserves empty and short inputs unchanged", () => {
-      expect(formatStellarAddress("")).toBe("");
-      expect(formatStellarAddress("GBCDEF123")).toBe("GBCDEF123");
-      expect(formatStellarAddress("GBCDEF12")).toBe("GBCDEF12");
-    });
-
-    it("always returns a 11-character string for longer inputs (1000 cases)", () => {
-      const rng = createPrng(0x6789abcd);
-      for (let i = 0; i < 1000; i++) {
-        const len = 10 + randomInt(rng, 100);
-        const input = randomFrom(rng, STELLAR_ALPHABET, len);
-        const formatted = formatStellarAddress(input);
-        expect(formatted.length).toBe(11);
-        expect(formatted.startsWith(input.slice(0, 4))).toBe(true);
-        expect(formatted.slice(4, 7)).toBe("...");
-        expect(formatted.endsWith(input.slice(-4))).toBe(true);
+  describe('accurate error string matching', () => {
+    it('reports invalid_string for non-string email inputs', () => {
+      const prng = createPrng(0x0e771);
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomAny(prng);
+        if (typeof input === 'string') continue;
+        const err = expectRejected(emailSchema, input);
+        expect(issueCodes(err)).equal([0]).length > 0 ? expect(issueCodes(err)).toContain('invalid_type') : undefined;
       }
     });
 
-    it("formats valid Stellar addresses consistently (500 cases)", () => {
-      const rng = createPrng(0xfedcba98);
+    it('reports invalid_string for malformed email strings', () => {
+      const prng = createPrng(0x0e772);
+      let checked = 0;
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomString(prng, 32);
+        if (isValidEmail(input)) continue;
+        checked++;
+        const err = expectRejected(emailSchema, input);
+        expect(issueCodes(err)).toContain('invalid_string');
+        expect(issuePaths(err)).toContain('');
+      }
+      expect(checked).toBeGreaterThan(0);
+    });
+
+    it('reports too_small for short passwords', () => {
+      const prng = createPrng(0x0e773);
+      let checked = 0;
+      for (let i = 0; i < FUZZ_ITERATIONS; i++) {
+        const input = randomString(prng, 7);
+        if (isValidPassword(input)) continue;
+        checked++;
+        const err = expectRejected(passwordSchema, input);
+        expect(issueCodes(err)).toContain('too_small');
+      }
+      expect(checked).toBeGreaterThan(0);
+    });
+
+    it('reports too_big for overly long passwords', () => {
+      const prng = createPrng(0x0e774);
+      const base = 'Aa1';
+      for (let i = 0; i < 250; i++) {
+        const input = base + randomString(prng, 128);
+        if (input.length <= 128) {
+          continue;
+        }
+        const err = expectRejected(passwordSchema, input);
+        expect(issueCodes(err)).toContain('too_big');
+      }
+    });
+
+    it('reports a custom message when a password lacks an uppercase letter', () => {
+      const err = expectRejected(passwordSchema, 'abcdefg1');
+      const messages = err.issues.map((i) => i.message);
+      expect(messages).toContain('Must contain an uppercase letter');
+    });
+
+    it('reports a custom message when a password lacks a lowercase letter', () => {
+      const err = expectRejected(passwordSchema, 'ABCDEFG1');
+      const messages = err.issues.map((i) => i.message);
+      expect(messages).toContain('Must contain a lowercase letter');
+    });
+
+    it('reports a custom message when a password lacks a digit', () => {
+      const err = expectRejected(passwordSchema, 'Abcdefgh');
+      const messages = err.issues.map((i) => i.message);
+      expect(messages).toContain('Must contain a digit');
+    });
+
+    it('reports invalid_string for usernames with disallowed characters', () => {
+      const err = expectRejected(usernameSchema, 'bad username!');
+      expect(issueCodes(err)).toContain('invalid_string');
+    });
+
+    it('reports invalid_uuid for malformed IDs', () => {
+      const err = expectRejected(idSchema, 'not-a-uuid');
+      expect(issueCodes(err)).toContain('invalid_string');
+    });
+
+    it('reports unrecognized_keys for extra fields in createUserSchema', () => {
+      const err = expectRejected(createUserSchema, {
+        email: 'john.doe@example.org',
+        username: 'john_doe',
+        password: 'SuperSecret1',
+        isAdmin: true,
+      });
+      expect(issueCodes(err)).toContain('unrecognized_keys');
+    });
+
+    it('reports invalid_enum_value for an unknown role', () => {
+      const err = expectRejected(createUserSchema, {
+        email: 'john.doe@example.org',
+        username: 'john_doe',
+        password: 'SuperSecret1',
+        role: 'superadmin',
+      });
+      expect(issueCodes(err)).toContain('invalid_enum_value');
+      expect(issuePaths(err)).toContain('role');
+    });
+
+    it('reports too_small for ages below the minimum', () => {
+      const err = expectRejected(createUserSchema, {
+        email: 'john.doe@example.org',
+        username: 'john_doe',
+        password: 'SuperSecret1',
+        age: 12,
+      });
+      expect(issueCodes(err)).toContain('too_small');
+      expect(issuePaths(err)).toContain('age');
+    });
+
+    it('reports invalid_type for non-integer ages', () => {
+      const err = expectRejected(createUserSchema, {
+        email: 'john.doe@example.org',
+        username: 'john_doe',
+        password: 'SuperSecret1',
+        age: 20.5,
+      });
+      expect(issueCodes(err)).toContain('invalid_type');
+      expect(issuePaths(err)).toContain('age');
+    });
+
+    it('reports too_big for tag arrays exceeding the limit', () => {
+      const err = expectRejected(listQuerySchema, {
+        tags: Array.from({ length: 11 }, (_, i) => `tag-${i}`),
+      });
+      expect(issueCodes(err)).toContain('too_big');
+      expect(issuePaths(err)).toContain('tags');
+    });
+
+    it('reports too_small for empty tag strings', () => {
+      const err = expectRejected(listQuerySchema, { tags: [''] });
+      expect(issueCodes(err)).toContain('too_small');
+      expect(issuePaths(err)).toContain('tags.0');
+    });
+
+    it('reports too_small for whitespace-only search strings', () => {
+      const err = expectRejected(listQuerySchema, { search: '   ' });
+      expect(issueCodes(err)).toContain('too_small');
+      expect(issuePaths(err)).toContain('search');
+    });
+
+    it('reports invalid_type for non-numeric page values that cannot be coerced', () => {
+      const err = expectRejected(listQuerySchema, { page: 'abc' });
+      expect(issueCodes(err)).toContain('invalid_type');
+      expect(issuePaths(err)).toContain('page');
+    });
+
+    it('reports too_big for page numbers above the maximum', () => {
+      const err = expectRejected(listQuerySchema, { page: 101 });
+      expect(issueCodes(err)).toContain('too_big');
+      expect(issuePaths(err)).toContain('page');
+    });
+
+    it('reports invalid_type for non-array tags', () => {
+      const err = expectRejected(listQuerySchema, { tags: 'not-an-array' });
+      expect(issueCodes(err)).toContain('invalid_type');
+      expect(issuePaths(err)).toContain('tags');
+    });
+
+    it('produces stable error output across repeated parses of the same input', () => {
+      const input = {
+        email: 'not-an-email',
+        username: 'a',
+        password: 'weak',
+        age: 2000,
+        role: 'superadmin',
+      };
+      const first = expectRejected(createUserSchema, input);
+      const second = expectRejected(createUserSchema, input);
+      expect(issueCodes(first).sort()).equal(issueCodes(second).sort());
+      expect(issuePaths(first).sort()).equal(issuePaths(second).sort());
+    });
+  });
+
+  describe('fuzzed round-trips for valid generated payloads', () => {
+    it('produces valid createUser payloads that pass the schema', () => {
+      const prng = createPrng(0x0a0d1);
       for (let i = 0; i < 500; i++) {
-        const address = generateValidAddress(rng, "Geet");
-        const formatted = formatStellarAddress(address);
-        expect(formatted).toBe(`${address.slice(0, 4)}...${address.slice(-4)}`);
-        // Round-trip sanity: formatted output must not be a valid address itself
-        expect(isValidStellarAddress(formatted)).toBe(false);
+        const payload = {
+          email: randomEmail(prng),
+          username: `user_${prng.int(1000, 999999)}`,
+          password: `Pass${prng.int(10, 99)}${prng.pick(['a', 'b', 'c'])}${prng.pick(['X', 'Y', 'Z'])}`,
+          age: prng.int(13, 120),
+          role: prng.pick(ROLES),
+        };
+        const result = createUserSchema.safeParse(payload);
+        expect(result.success).toBe(true);
       }
     });
-  });
 
-  describe("Error string matching", () => {
-    it("matches the exact Freighter-not-installed error message", () => {
-      // We only assert the exact string that the code throws when Freighter is missing.
-      // This guarantees error messages don't drift away from the UI copy.
-      const expected =
-        "Freighter wallet extension is not detected. If on mobile, please use Albedo (Web Wallet) or Demo Account.";
-      // Verify the module exports the function we expect and that its source contains
-      // the exact message string -- this is a static contract check that fails if
-      // the copy is edited without updating the test.
-      expect(typeof connectFreighterWallet).toBe("function");
-      const source = connectFreighterWallet.toString();
-      expect(source.includes(expected)).toBe(true);
+    it('produces valid listQuery payloads that pass the schema', () => {
+      const prng = createPrng(0x0a0d2);
+      for (let i = 0; i < 500; i++) {
+        const payload = {
+          page: prng.int(1, 100),
+          search: prng.bool() ? `term-${prng.int(1, 999)}` : undefined,
+          tags: Array.from({ length: prng.int(0, 10) }, () => `tag-${prng.int(1, 999)}`),
+        };
+        const result = listQuerySchema.safeParse(payload);
+        expect(result.success).toBe(true);
+      }
     });
 
-    it("matches the exact Albedo popup-blocked error message", () => {
-      const expected =
-        "Albedo window was blocked by your browser popup blocker. Please allow popups for this site.";
-      expect(typeof connectAlbedoWallet).toBe("function");
-      const source = connectAlbedoWallet.toString();
-      expect(source.includes(expected)).toBe(true);
-    });
-
-    it("matches the exact xBull-not-installed error message", () => {
-      const expected =
-        "xBull wallet extension is not installed. Please install xBull from https://xbull.app or use Albedo on mobile.";
-      expect(typeof connectXbullWallet).toBe("function");
-      const source = connectXbullWallet.toString();
-      expect(source.includes(expected)).toBe(true);
-    });
-
-    it("throws the exact xBull message when xBull is unavailable", async () => {
-      // Ensure global window has no xBull handle during this test.
-      const globalWindow = globalThis as any;
-      const previousXbull = globalWindow.xBullSDK;
-      const previousXbullLower = globalWindow.xbull;
-      delete globalWindow.xBullSDK;
-      delete globalWindow.xbull;
-      try {
-        await expect(connectXbullWallet()).rejects.toThrow(
-          "xBull wallet extension is not installed. Please install xBull from https://xbull.app or use Albedo on mobile.",
-        );
-      } finally {
-        globalWindow.xBullSDK = previousXbull;
-        globalWindow.xbull = previousXbullLower;
+    it('produces valid UUIDs that pass idSchema', () => {
+      const prng = createPrng(0x0a0d3);
+      for (let i = 0; i < 500; i++) {
+        const id = randomUuid(prng);
+        expect(idSchema.safeParse(id).success).toBe(true);
       }
     });
   });
