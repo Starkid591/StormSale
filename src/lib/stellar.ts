@@ -21,6 +21,7 @@ import {
 import { STELLAR_CONFIG, SUPPORTED_ESCROW_ASSETS } from "../config/stellar";
 import type { SupportedEscrowAssetCode } from "../config/stellar";
 import { CONTRACT_ADDRESSES } from "../config/contracts";
+import { rpcFallbackManager } from "./rpcFallback";
 
 export type WalletType =
   | "freighter" | "albedo" | "xbull" | "ledger" | "passkey" | "mock" | "readonly";
@@ -189,7 +190,7 @@ export async function connectXbullWallet(): Promise<string> {
     const address = await xbull.getPublicKey();
     return address;
   } catch (err: any) {
-    throw new Error(err.message || "xBull connection failed.");
+    throw new Error(err.message || "xBull connection failed.", { cause: err });
   }
 }
 
@@ -250,11 +251,13 @@ export async function getCurrentNetwork(): Promise<string> {
 }
 
 /**
- * Queries the Stellar Horizon API for the account's XLM balance.
+ * Queries the Stellar Horizon API for the account's XLM balance with silent multi-endpoint failover.
  */
 export async function fetchXlmBalance(address: string): Promise<string> {
   try {
-    const response = await fetch(`${STELLAR_CONFIG.horizonUrl}/accounts/${address}`);
+    const response = await rpcFallbackManager.executeHorizonFetchWithFallback(
+      (horizonBaseUrl) => `${horizonBaseUrl}/accounts/${address}`,
+    );
     if (!response.ok) {
       if (response.status === 404) {
         return "0.0000000 (Unfunded)";
@@ -437,6 +440,13 @@ export async function getAccountBalance(address: string): Promise<string> {
 }
 
 /**
+ * Returns a configured Soroban RPC Server instance from the active node in rpcFallbackManager.
+ */
+export function getSorobanRpcServer(): rpc.Server {
+  return rpcFallbackManager.getActiveRpcServer();
+}
+
+/**
  * Builds and submits a Soroban contract invocation transaction.
  */
 export async function invokeSorobanContract(params: {
@@ -499,6 +509,101 @@ export async function invokeSorobanContract(params: {
       resultValue: err.message,
     };
   }
+}
+
+/**
+ * Invokes a Soroban contract method: prepares, simulates, signs, submits, and polls for confirmation.
+ */
+export async function invokeSorobanMethod(
+  callerAddress: string,
+  methodName: string,
+  scValArgs: xdr.ScVal[],
+  walletType: WalletType = "freighter",
+  contractIdOverride?: string,
+): Promise<SorobanInvokeResult> {
+  const targetContractId = contractIdOverride || STELLAR_CONFIG.contractId;
+
+  // 1-5. Fetch account, simulate and assemble transaction with silent RPC failover
+  let preparedTx: any;
+  try {
+    const { preliminaryTx, simResponse } = await rpcFallbackManager.executeWithFallback(
+      async (activeServer) => {
+        const account = await activeServer.getAccount(callerAddress);
+        const contract = new Contract(targetContractId);
+        const callOp = contract.call(methodName, ...scValArgs);
+        const preliminaryTx = new TransactionBuilder(account, {
+          fee: BASE_FEE,
+          networkPassphrase: STELLAR_CONFIG.networkPassphrase,
+        })
+          .addOperation(callOp)
+          .setTimeout(60)
+          .build();
+
+        const simResponse = await activeServer.simulateTransaction(preliminaryTx);
+        return { preliminaryTx, simResponse };
+      },
+    );
+
+    if (rpc.Api.isSimulationError(simResponse)) {
+      throw new Error(`Soroban simulation failed: ${simResponse.error}`);
+    }
+
+    preparedTx = rpc.assembleTransaction(preliminaryTx, simResponse).build();
+  } catch (err: any) {
+    throw new Error(
+      `Soroban invocation preparation failed for ${callerAddress}: ${err?.message || err}`,
+      { cause: err },
+    );
+  }
+
+  // 6. Sign transaction via the active wallet (Freighter, Albedo, xBull)
+  const signedXdr = await signWalletTransaction(preparedTx.toXDR(), walletType);
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, STELLAR_CONFIG.networkPassphrase);
+
+  // 7. Submit transaction to Soroban RPC with silent fallback
+  const sendResponse = await rpcFallbackManager.executeWithFallback(async (activeServer) => {
+    return await activeServer.sendTransaction(signedTx);
+  });
+  if (sendResponse.status === "ERROR") {
+    throw new Error(`Failed to submit transaction: ${JSON.stringify(sendResponse.errorResult)}`);
+  }
+
+  // 8. Poll for ledger confirmation with silent fallback
+  const txHash = sendResponse.hash;
+  let attempts = 0;
+  const maxAttempts = 25;
+
+  while (attempts < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    attempts++;
+
+    const statusResponse = await rpcFallbackManager.executeWithFallback(async (activeServer) => {
+      return await activeServer.getTransaction(txHash);
+    });
+    if (statusResponse.status === "SUCCESS") {
+      let resultValue: any = null;
+      if (statusResponse.returnValue) {
+        try {
+          resultValue = scValToNative(statusResponse.returnValue);
+        } catch {
+          resultValue = null;
+        }
+      }
+      return {
+        success: true,
+        txHash,
+        resultValue,
+      };
+    } else if (statusResponse.status === "FAILED") {
+      throw new Error(
+        `Soroban execution reverted on ledger. Check contract preconditions or balance.`,
+      );
+    }
+  }
+
+  throw new Error(
+    `Transaction timed out awaiting confirmation after ${maxAttempts} attempts. Hash: ${txHash}`,
+  );
 }
 
 /**
@@ -670,23 +775,27 @@ export async function claimPayoutContractCall(
  * Reads campaign metadata directly from Soroban contract storage.
  */
 export async function getCampaignContractQuery(campaignId: number): Promise<any> {
-  const server = getSorobanRpcServer();
-  const contract = new Contract(STELLAR_CONFIG.contractId);
-  const dummyAccount = new Account("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", "0");
+  return rpcFallbackManager.executeWithFallback(async (server) => {
+    const contract = new Contract(STELLAR_CONFIG.contractId);
+    const dummyAccount = new Account(
+      "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "0",
+    );
 
-  const tx = new TransactionBuilder(dummyAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: STELLAR_CONFIG.networkPassphrase,
-  })
-    .addOperation(contract.call("get_campaign", nativeToScVal(campaignId, { type: "u32" })))
-    .setTimeout(30)
-    .build();
+    const tx = new TransactionBuilder(dummyAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: STELLAR_CONFIG.networkPassphrase,
+    })
+      .addOperation(contract.call("get_campaign", nativeToScVal(campaignId, { type: "u32" })))
+      .setTimeout(30)
+      .build();
 
-  const sim = await server.simulateTransaction(tx);
-  if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
-    return scValToNative(sim.result.retval);
-  }
-  return null;
+    const sim = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
+      return scValToNative(sim.result.retval);
+    }
+    return null;
+  });
 }
 
 /**
@@ -705,46 +814,55 @@ export async function getTokenAllowanceQuery(
   if (
     ownerAddress.startsWith("GASTORMSALE7") ||
     ownerAddress === "mock" ||
-    (typeof (globalThis as any).process !== "undefined" && (globalThis as any).process?.env?.NODE_ENV === "test")
+    (typeof (globalThis as any).process !== "undefined" &&
+      (globalThis as any).process?.env?.NODE_ENV === "test")
   ) {
     if (typeof window !== "undefined" && window.localStorage) {
-      const mockVal = window.localStorage.getItem(`mock_allowance_${ownerAddress}_${spenderAddress}`);
+      const mockVal = window.localStorage.getItem(
+        `mock_allowance_${ownerAddress}_${spenderAddress}`,
+      );
       if (mockVal !== null) return parseFloat(mockVal) || 0;
     }
     return 0;
   }
 
   try {
-    const server = getSorobanRpcServer();
-    const contract = new Contract(tokenContractId);
-    const dummyAccount = new Account("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", "0");
+    return await rpcFallbackManager.executeWithFallback(async (server) => {
+      const contract = new Contract(tokenContractId);
+      const dummyAccount = new Account(
+        "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "0",
+      );
 
-    const tx = new TransactionBuilder(dummyAccount, {
-      fee: BASE_FEE,
-      networkPassphrase: STELLAR_CONFIG.networkPassphrase,
-    })
-      .addOperation(
-        contract.call(
-          "allowance",
-          new Address(ownerAddress).toScVal(),
-          new Address(spenderAddress).toScVal(),
-        ),
-      )
-      .setTimeout(30)
-      .build();
+      const tx = new TransactionBuilder(dummyAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: STELLAR_CONFIG.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "allowance",
+            new Address(ownerAddress).toScVal(),
+            new Address(spenderAddress).toScVal(),
+          ),
+        )
+        .setTimeout(30)
+        .build();
 
-    const sim = await server.simulateTransaction(tx);
-    if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
-      const nativeVal = scValToNative(sim.result.retval);
-      const divisor = Math.pow(10, decimals);
-      const stroops = typeof nativeVal === "bigint" ? Number(nativeVal) : parseFloat(nativeVal);
-      return Math.max(0, stroops / divisor);
-    }
-    return 0;
+      const sim = await server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
+        const nativeVal = scValToNative(sim.result.retval);
+        const divisor = Math.pow(10, decimals);
+        const stroops = typeof nativeVal === "bigint" ? Number(nativeVal) : parseFloat(nativeVal);
+        return Math.max(0, stroops / divisor);
+      }
+      return 0;
+    });
   } catch (error) {
     console.warn("Failed to query token allowance:", error);
     if (typeof window !== "undefined" && window.localStorage) {
-      const fallback = window.localStorage.getItem(`mock_allowance_${ownerAddress}_${spenderAddress}`);
+      const fallback = window.localStorage.getItem(
+        `mock_allowance_${ownerAddress}_${spenderAddress}`,
+      );
       if (fallback !== null) return parseFloat(fallback) || 0;
     }
     return 0;
@@ -768,7 +886,8 @@ export async function approveTokenContractCall(
   if (
     walletType === "mock" ||
     ownerAddress.startsWith("GASTORMSALE7") ||
-    (typeof (globalThis as any).process !== "undefined" && (globalThis as any).process?.env?.NODE_ENV === "test")
+    (typeof (globalThis as any).process !== "undefined" &&
+      (globalThis as any).process?.env?.NODE_ENV === "test")
   ) {
     const mockHash =
       "0x" + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
