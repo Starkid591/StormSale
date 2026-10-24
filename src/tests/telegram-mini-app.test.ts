@@ -110,7 +110,7 @@ describe("Telegram Mini-App (TMA) Client Integration", () => {
 
     const mockNavigator = {
       clipboard: {
-        writeText: vi.fn().mockResolved(undefined),
+        writeText: vi.fn().mockResolvedValue(undefined),
       },
     };
 
@@ -189,7 +189,7 @@ describe("Telegram Mini-App (TMA) Client Integration", () => {
       expect(isTelegramMiniApp()).toBe(false);
     });
 
-    it("returns false when Telegram WebApp SD is not present", () => {
+    it("returns false when Telegram WebApp SDK is not present", () => {
       delete (globalThis as any).window.Telegram;
       expect(isTelegramMiniApp()).toBe(false);
       expect(getTelegramPlatform()).toBe("web");
@@ -317,7 +317,7 @@ describe("Telegram Mini-App (TMA) Client Integration", () => {
 
   describe("Link Copy with Native Telegram Feedback", () => {
     it("copies referral URL to clipboard and triggers success haptic feedback", async () => {
-      const writeTextMock = vi.fn().mockResolved(undefined);
+      const writeTextMock = vi.fn().mockResolvedValue(undefined);
       (navigator.clipboard as any).writeText = writeTextMock;
 
       const url = "https://stormsale.xyz/c/camp-usdc-101?ref=GBSTORM999";
@@ -329,7 +329,7 @@ describe("Telegram Mini-App (TMA) Client Integration", () => {
     });
 
     it("triggers error haptic feedback if clipboard writing fails", async () => {
-      const writeTextMock = vi.fn().mockRejected(new Error("Permission denied"));
+      const writeTextMock = vi.fn().mockRejectedValue(new Error("Permission denied"));
       (navigator.clipboard as any).writeText = writeTextMock;
 
       const url = "https://stormsale.xyz/c/camp-usdc-101?ref=GBSTORM999";
@@ -340,7 +340,7 @@ describe("Telegram Mini-App (TMA) Client Integration", () => {
     });
 
     it("falls back to execCommand when navigator.clipboard.writeText rejects and succeeds if execCommand succeeds", async () => {
-      const writeTextMock = vi.fn().mockRejected(new Error("Permission denied"));
+      const writeTextMock = vi.fn().mockRejectedValue(new Error("Permission denied"));
       (navigator.clipboard as any).writeText = writeTextMock;
 
       const execCommandMock = vi.fn(() => true);
