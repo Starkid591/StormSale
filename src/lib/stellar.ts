@@ -475,12 +475,12 @@ export async function invokeSorobanContract(params: {
     const contract = new Contract(params.contractId);
     const operation = contract.call(params.method, ...(params.args || []));
 
-    const tx = new TransactionBuilder()
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
       .addOperation(operation)
-      .setNetworkPassphrase(networkPassphrase)
-      .setFee(BASE_FEE)
       .setTimeout(30)
-      .setSourceAccount(sourceAccount)
       .build();
 
     tx.sign();

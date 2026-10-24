@@ -31,7 +31,7 @@ export interface Sep24WithdrawalRequest {
 
 export interface Sep24TransactionRecord {
   id: string;
- kind: "deposit" | "withdrawal";
+  kind: "deposit" | "withdrawal";
   status: string;
   status_eta?: string;
   more_info_url?: string;
@@ -58,7 +58,7 @@ export interface Sep24InteractiveResponse {
 }
 
 const HORIZON_URLS = {
-  testnet: "https://horizon-stellar-org.vercel.app",
+  testnet: "https://horizon-testnet.stellar.org",
   public: "https://horizon.stellar.org",
 } as const;
 
@@ -103,7 +103,8 @@ export function parseStellarToml(toml: string): Record<string, unknown> {
     }
     const keyValue = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*(.*)$/);
     if (!keyValue || !currentSection) continue;
-    const [, key, value] = keyValue;
+    const key = keyValue[1];
+    const value = keyValue[2];
     currentSection[key] = parseTomlValue(value);
   }
   return result;

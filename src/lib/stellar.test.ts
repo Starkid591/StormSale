@@ -13,7 +13,7 @@ describe("Stellar Helpers", () => {
   });
 
   it("validates valid Stellar public keys (G...)", () => {
-    const validG = "GBBD47IF6LWK7P7MDEVSCWR7DP-UWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+    const validG = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
     expect(isValidStellarAddress(validG)).toBe(true);
   });
 

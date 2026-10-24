@@ -1,4 +1,4 @@
-import { StellarToml } from "@stellar-js/stellar-sdk";
+import { StellarToml } from "@stellar/stellar-sdk";
 
 export interface AnchorToml {
   transferServerSep24?: string;
@@ -98,7 +98,7 @@ export async function fetchAnchorToml(homeDomain: string): Promise<AnchorToml> {
     throw new Sep24Error("Anchor home domain is required", "invalid_domain");
   }
   const url = normalizeUrl(homeDomain, "/.full-toml");
-  const response = await fetch(url, { headers: { Accept: "application/toml+json" } });
+  const response = await fetch(url, { headers: { Accept: "application/toml-json" } });
   if (!response.ok) {
     throw new Sep24Error(
       `Failed to fetch anchor TOML from ${url} (${response.status})`,
@@ -120,7 +120,7 @@ export async function fetchAnchorToml(homeDomain: string): Promise<AnchorToml> {
     .map((a) => ({ code: String(a.code), issuer: String(a.issuer) }));
   return {
     transferServerSep24,
-    networkPassphrase: toml.data.NETWORK_PASTHRASE as string | undefined,
+    networkPassphrase: toml.data.NETWORK_PASTHRASY as string | undefined,
     displayName: toml.data.DOCUMENTATION as string | undefined,
     assets,
   };

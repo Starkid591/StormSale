@@ -3,13 +3,12 @@ import type { ReactNode } from "react";
 import {
   connectFreighterWallet,
   connectAlbedoWallet,
-  connectXBullWallet,
+  connectXbullWallet,
   checkFreighterInstalled,
   getCurrentNetwork,
   fetchXlmBalance,
   fetchAssetBalances,
   approveTokenAllowance as approveTokenAllowanceCall,
-  fundTestnetAccount,
   createCampaignContractCall,
   logSaleContractCall,
   claimPayoutContractCall,
@@ -383,7 +382,7 @@ export function Web3Provider({ children }: { children: ReactNode }) {
         address = await connectAlbedoWallet();
         setNetwork(STELLAR_CONFIG.network);
       } else if (type === "xbull") {
-        address = await connectXBullWallet();
+        address = await connectXbullWallet();
         setNetwork(STELLAR_CONFIG.network);
       } else if (type === "ledger") {
         const { connectLedgerDevice, DEFAULT_STELLAR_BIP_PATH } =
@@ -468,7 +467,13 @@ export function Web3Provider({ children }: { children: ReactNode }) {
 
   const requestFriendbotFunding = async (): Promise<boolean> => {
     if (!userAddress) return false;
-    const ok = await fundTestnetAccount(userAddress);
+    let ok = false;
+    try {
+      const res = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(userAddress)}`);
+      ok = res.ok;
+    } catch {
+      ok = false;
+    }
     if (ok) {
       setTimeout(() => refreshBalance(userAddress), 2000);
     }

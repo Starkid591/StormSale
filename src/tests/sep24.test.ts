@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import {
   Sep24Error,
   fetchAnchorToml,
@@ -14,7 +14,7 @@ import {
 const TOML_URL = "https://anchor.test";
 
 const fullToml = {
-  NETWORK_PASTHRASY: "Test Stellar Network ; SEP0000",
+  NETWORK_PASSPHRASE: "Test Stellar Network ; SEP0000",
   DOCUMENTATION: "Anchor Test",
   TRANSFER_SERVER_SEP24: "https://anchor.test/sep24",
   CURRENCIES: [
@@ -31,8 +31,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("SEP-024 client", () => {
-  const fetchMock = vi.fn();
-  const openMock = vi.fn();
+  const fetchMock: Mock = vi.fn();
+  const openMock: Mock = vi.fn();
 
   beforeEach(() => {
     fetchMock.mockReset();
@@ -48,12 +48,11 @@ describe("SEP-024 client", () => {
   });
 
   afterEach(() => {
-    vi.unstubGlobal("fetch");
-    vi.unstubGlobal("window");
+    vi.unstubAllGlobals();
   });
 
   it("fetches and parses anchor TOML", async () => {
-    fetchMock.mockResolvedOnce(jsonResponse(fullToml));
+    fetchMock.mockResolvedValueOnce(jsonResponse(fullToml));
     const toml = await fetchAnchorToml(TOML_URL);
     expect(toml.transferServerSep24).toBe("https://anchor.test/sep24");
     expect(toml.displayName).toBe("Anchor Test");
@@ -64,20 +63,22 @@ describe("SEP-024 client", () => {
   });
 
   it("throws when SEP-24 is not declared", async () => {
-    fetchMock.mockResolvedOnce(jsonResponse({ ...fullToml, TRANSFER_SERVER_SEP24: undefined }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...fullToml, TRANSFER_SERVER_SEP24: undefined }),
+    );
     await expect(fetchAnchorToml(TOML_URL)).rejects.toMatchObject({
       code: "sep24_not_supported",
     });
   });
 
   it("discovers tradeable withdrawal assets", async () => {
-    fetchMock.mockResolvedOnce(jsonResponse(fullToml));
+    fetchMock.mockResolvedValueOnce(jsonResponse(fullToml));
     const assets = await discoverWithdrawalAssets(TOML_URL);
     expect(assets).toEqual([{ code: "USDC", issuer: "issuer" }]);
   });
 
   it("initiates interactive withdrawal with auth token", async () => {
-    fetchMock.mockResolvedOnce(
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({
         id: "tx-1",
         type: "withdrawal",
@@ -109,7 +110,7 @@ describe("SEP-024 client", () => {
   });
 
   it("returns transfer status with fiat reference", async () => {
-    fetchMock.mockResolvedOnce(
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({
         transaction: {
           id: "tx-1",
@@ -131,10 +132,10 @@ describe("SEP-024 client", () => {
   });
 
   it("polls until terminal status", async () => {
-    fetchMock.mockResolvedOnce(
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({ transaction: { id: "tx-1", status: "pending_anchor" } }),
     );
-    fetchMock.mockResolvedOnce(
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({
         transaction: {
           id: "tx-1",
@@ -180,17 +181,22 @@ describe("SEP-024 client", () => {
   });
 
   it("runs end to end withdrawal flow with popup and receipt", async () => {
-    const popup = { closed: false, close: vi.fn(() => { popup.closed = true; }) };
+    const popup = {
+      closed: false,
+      close: vi.fn(() => {
+        popup.closed = true;
+      }),
+    };
     openMock.mockReturnValue(popup);
-    fetchMock.mockResolvedOnce(jsonResponse(fullToml));
-    fetchMock.mockResolvedOnce(
+    fetchMock.mockResolvedValueOnce(jsonResponse(fullToml));
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({
         id: "tx-1",
         type: "withdrawal",
         url_interactive: "https://anchor.test/interactive?token=abc",
       }),
     );
-    fetchMock.mockResolvedOnce(
+    fetchMock.mockResolvedValueOnce(
       jsonResponse({
         transaction: {
           id: "tx-1",
