@@ -360,42 +360,43 @@ describe('Validation schema fuzzing', () => {
     });
 
     it('accepts a known-good createUser payload', () => {
-      const prng = createPrng(0x0e117);
-      const payload = {
-        id: randomUuid(prng),
+      const input = {
+        id: randomUuid(createPrng(0x0e117)),
         email: 'alice@example.com',
         username: 'alice_01',
-        password: 'Passw0rdValid',
+        password: 'Passw0rdX',
         age: 30,
         role: 'editor',
       };
-      expect(createUserSchema.safeParse(payload).success).toBe(true);
-      expect(isValidCreateUser(payload)).toBe(true);
+      const result = createUserSchema.safeParse(input);
+      expect(result.success).toBe(true);
+      expect(isValidCreateUser(input)).toBe(true);
     });
   });
 
   describe('error string matching', () => {
-    it('rejects a weak password with a regex issue on the password path', () => {
-      const err = expectRejected(passwordSchema, 'alllowercase1');
-      expect(issueCodes(err)).toContain('invalid_string');
-      expect(err.issues.some((i) => i.message === 'Must contain an uppercase letter')).toBe(true);
-    });
-
-    it('reports the offending field path for createUserSchema', () => {
+    it('rejects a createUser payload with a bad email at the email path', () => {
       const err = expectRejected(createUserSchema, {
         email: 'not-an-email',
-        username: 'bob',
-        password: 'Passw0rdValid',
+        username: 'alice',
+        password: 'Passw0rdX',
       });
       expect(issuePaths(err)).toContain('email');
+      expect(issueCodes(err)).toContain('invalid_string');
     });
 
-    it('rejects unknown keys in strict createUserSchema', () => {
+    it('rejects a password missing a digit with the expected message', () => {
+      const err = expectRejected(passwordSchema, 'NoDigitsHere');
+      const messages = err.issues.map((i) => i.message);
+      expect(messages).toContain('Must contain a digit');
+    });
+
+    it('rejects extra keys on createUserSchema (strict mode)', () => {
       const err = expectRejected(createUserSchema, {
-        email: 'carol@example.com',
-        username: 'carol',
-        password: 'Passw0rdValid',
-        isAdmin: true,
+        email: 'alice@example.com',
+        username: 'alice',
+        password: 'Passw0rdX',
+        extra: true,
       });
       expect(issueCodes(err)).toContain('unrecognized_keys');
     });
