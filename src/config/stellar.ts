@@ -136,7 +136,7 @@ export const STELLAR_NETWORKS = {
  *
  * SEP-0024 defines a standard way for wallets to discover and interact with
  * anchors that provide fiat on/off-ramps. The wallet fetches the anchor's
- * `stellar.toml` (via `TRANSFER_SERVER_SEP024`), then drives the interactive
+ * `stellar.toml` (via `TRANSFER_SERVER_SEP24`), then drives the interactive
  * withdrawal flow through the anchor's popup UI.
  *
  * @see https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0024.md

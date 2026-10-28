@@ -98,7 +98,10 @@ export async function fetchAnchorToml(homeDomain: string): Promise<AnchorToml> {
     throw new Sep24Error("Anchor home domain is required", "invalid_domain");
   }
   const url = normalizeUrl(homeDomain, "/.full-toml");
-  const response = await fetch(url, { headers: { Accept: "application/toml-json" } });
+  const response = await fetch(url, {
+    headers: { Accept: "application/toml-json" },
+    redirect: "error",
+  });
   if (!response.ok) {
     throw new Sep24Error(
       `Failed to fetch anchor TOML from ${url} (${response.status})`,
@@ -120,7 +123,7 @@ export async function fetchAnchorToml(homeDomain: string): Promise<AnchorToml> {
     .map((a) => ({ code: String(a.code), issuer: String(a.issuer) }));
   return {
     transferServerSep24,
-    networkPassphrase: toml.data.NETWORK_PASTHRASY as string | undefined,
+    networkPassphrase: toml.data.NETWORK_PASSPHRASE as string | undefined,
     displayName: toml.data.DOCUMENTATION as string | undefined,
     assets,
   };
@@ -306,17 +309,23 @@ export function openInteractivePopup(
       "popup_blocked",
     );
   }
-  if (options.onMessage) {
-    const handler = (event: MessageEvent) => {
-      if (event.source !== popup) return;
-      options.onMessage!(event);
+  if (options.onMessage || options.onClose) {
+    const cleanup = () => {
+      if (options.onMessage) {
+        window.removeEventListener("message", messageHandler);
+      }
+      window.clearInterval(interval);
     };
-    window.addEventListener("message", handler);
-    const cleanup = () => window.removeEventListener("message", handler);
+    const messageHandler = (event: MessageEvent) => {
+      if (event.source !== popup) return;
+      options.onMessage?.(event);
+    };
+    if (options.onMessage) {
+      window.addEventListener("message", messageHandler);
+    }
     const interval = window.setInterval(() => {
       if (popup.closed) {
         cleanup();
-        window.clearInterval(interval);
         options.onClose?.();
       }
     }, 500);
