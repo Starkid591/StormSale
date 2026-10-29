@@ -360,3 +360,5 @@ export function CopyableAddress({
     </div>
   );
 }
+
+export default CopyButton;
