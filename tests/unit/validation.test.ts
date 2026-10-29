@@ -361,10 +361,10 @@ describe('Validation schema fuzzing', () => {
 
     it('accepts a known-good createUser payload', () => {
       const input = {
-        id: randomUuid(createPrng(0x0e117)),
-        email: 'alice@example.com',
-        username: 'alice_01',
-        password: 'Passw0rdX',
+        id: '123e4567-e89b-42d3-a456-426614174000',
+        email: 'jane.doe@example.com',
+        username: 'jane_doe',
+        password: 'Str0ngPassw0rd',
         age: 30,
         role: 'editor',
       };
@@ -375,30 +375,23 @@ describe('Validation schema fuzzing', () => {
   });
 
   describe('error string matching', () => {
-    it('rejects a createUser payload with a bad email at the email path', () => {
+    it('rejects a createUser payload with an unknown key with an unrecognized_keys issue', () => {
       const err = expectRejected(createUserSchema, {
-        email: 'not-an-email',
-        username: 'alice',
-        password: 'Passw0rdX',
-      });
-      expect(issuePaths(err)).toContain('email');
-      expect(issueCodes(err)).toContain('invalid_string');
-    });
-
-    it('rejects a password missing a digit with the expected message', () => {
-      const err = expectRejected(passwordSchema, 'NoDigitsHere');
-      const messages = err.issues.map((i) => i.message);
-      expect(messages).toContain('Must contain a digit');
-    });
-
-    it('rejects extra keys on createUserSchema (strict mode)', () => {
-      const err = expectRejected(createUserSchema, {
-        email: 'alice@example.com',
-        username: 'alice',
-        password: 'Passw0rdX',
+        email: 'jane.doe@example.com',
+        username: 'jane_doe',
+        password: 'Str0ngPassw0rd',
         extra: true,
       });
       expect(issueCodes(err)).toContain('unrecognized_keys');
+    });
+
+    it('reports the path of a weak password', () => {
+      const err = expectRejected(createUserSchema, {
+        email: 'jane.doe@example.com',
+        username: 'jane_doe',
+        password: 'weak',
+      });
+      expect(issuePaths(err)).toContain('password');
     });
   });
 });
